@@ -7,9 +7,10 @@ import json
 import os
 from pathlib import Path
 import secrets
+import sys
 import tempfile
 import time
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs, urlencode, urlsplit
 import uuid
 import webbrowser
@@ -44,7 +45,7 @@ class _CallbackHandler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         query = parse_qs(parsed.query)
-        self.server.callback = {key: values[0] for key, values in query.items() if values}
+        cast(_CallbackServer, self.server).callback = {key: values[0] for key, values in query.items() if values}
         body = b"ChatGPT authorization received. You can close this tab and return to CrewAI."
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -106,8 +107,9 @@ class ChatGPTOAuth:
 
         authorization_url = f"{AUTHORIZATION_ENDPOINT}?{urlencode(params)}"
         if not webbrowser.open(authorization_url):
-            print("Open this URL to continue ChatGPT authorization:")
-            print(authorization_url)
+            sys.stdout.write("Open this URL to continue ChatGPT authorization:\n")
+            sys.stdout.write(f"{authorization_url}\n")
+            sys.stdout.flush()
 
         deadline = time.monotonic() + timeout
         try:
@@ -185,7 +187,8 @@ class ChatGPTOAuth:
             "scopes": sorted(scopes),
             "expires_at": time.time() + self._positive_int(token_data.get("expires_in"), default=3600),
         }
-        self._write_profile(saved_profile)
+        with portalocker.Lock(str(self.lock_path), mode="a", timeout=30):
+            self._write_profile(saved_profile)
         return self.status() or {}
 
     def get_access_token(self) -> str:
