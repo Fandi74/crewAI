@@ -31,8 +31,9 @@ Set the chatgpt_oauth option to true on the OpenAI LLM:
 from crewai import LLM
 
 llm = LLM(
-    model="openai/gpt-5",
+    model="openai/gpt-6.1-sol",
     chatgpt_oauth=True,
+    reasoning_effort="low",
 )
 ```
 
