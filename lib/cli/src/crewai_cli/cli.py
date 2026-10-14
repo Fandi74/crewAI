@@ -819,13 +819,18 @@ def chatgpt_logout() -> None:
     from crewai_core.chatgpt_auth import ChatGPTOAuth
 
     try:
-        removed = ChatGPTOAuth().sign_out()
+        removed, revoked = ChatGPTOAuth().sign_out()
     except Exception as exc:
         raise click.ClickException(str(exc)) from exc
-    if removed:
-        click.echo("Removed local ChatGPT credentials. The remote grant was not revoked.")
-    else:
+    if not removed:
         click.echo("No local ChatGPT credentials were saved.")
+    elif revoked:
+        click.echo("Revoked the renewable ChatGPT session and cleared local tokens.")
+    else:
+        click.echo(
+            "Cleared local tokens, but remote revocation could not be confirmed. "
+            "Disconnect this app in ChatGPT Settings if needed."
+        )
 
 
 @crewai.command()
