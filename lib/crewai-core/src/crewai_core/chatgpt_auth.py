@@ -288,6 +288,10 @@ class ChatGPTOAuth:
             if profile is None:
                 return False, False
 
+            had_tokens = any(profile.get(key) for key in ("access_token", "refresh_token", "id_token"))
+            if not had_tokens:
+                return False, True
+
             refresh_token = profile.get("refresh_token")
             client_id = profile.get("client_id")
             revoked = False
