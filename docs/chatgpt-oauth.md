@@ -21,7 +21,7 @@ To remove the local credentials, run:
 crewai auth chatgpt logout
 ```
 
-This removes credentials from the machine; it does not revoke the remote grant. The user can revoke the app in ChatGPT settings.
+Logout attempts to revoke the renewable ChatGPT session before clearing local tokens. If the network prevents confirmation, the CLI says so; the user can disconnect the app in ChatGPT settings.
 
 ## Configure a CrewAI LLM
 
