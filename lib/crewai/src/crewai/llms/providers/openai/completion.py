@@ -429,11 +429,22 @@ class OpenAICompletion(BaseLLM):
                 if data.get(key) not in (None, api_base):
                     raise ValueError("chatgpt_oauth only supports https://api.openai.com/v1")
             client_params = data.get("client_params") or {}
+            if not isinstance(client_params, Mapping):
+                raise ValueError("client_params must be a mapping with chatgpt_oauth")
             if client_params.get("base_url") not in (None, api_base):
                 raise ValueError("chatgpt_oauth only supports https://api.openai.com/v1")
-            headers = data.get("default_headers") or client_params.get("default_headers") or {}
-            if any(str(key).lower() == "authorization" for key in headers):
-                raise ValueError("Do not set Authorization headers with chatgpt_oauth")
+            if client_params.get("http_client") is not None:
+                raise ValueError("Custom HTTP clients are not supported with chatgpt_oauth")
+            if data.get("interceptor") is not None:
+                raise ValueError("Custom HTTP interceptors are not supported with chatgpt_oauth")
+            header_maps = (data.get("default_headers"), client_params.get("default_headers"))
+            for headers in header_maps:
+                if headers is None:
+                    continue
+                if not isinstance(headers, Mapping):
+                    raise ValueError("default_headers must be a mapping with chatgpt_oauth")
+                if any(str(key).lower() == "authorization" for key in headers):
+                    raise ValueError("Do not set Authorization headers with chatgpt_oauth")
             data["api"] = "responses"
             data["store"] = False
             data["stream"] = True
@@ -473,6 +484,8 @@ class OpenAICompletion(BaseLLM):
         defer so ``LLM(model="openai/...")`` can be constructed at module
         import time even before deployment env vars are set.
         """
+        if self.chatgpt_oauth:
+            return self
         try:
             self._client = self._build_sync_client()
             self._async_client = self._build_async_client()
@@ -480,15 +493,15 @@ class OpenAICompletion(BaseLLM):
             pass
         return self
 
-    def _build_sync_client(self) -> Any:
-        client_config = self._get_client_params()
+    def _build_sync_client(self, *, access_token: str | None = None) -> Any:
+        client_config = self._get_client_params(access_token=access_token)
         if self.interceptor:
             transport = HTTPTransport(interceptor=self.interceptor)
             client_config["http_client"] = httpx.Client(transport=transport)
         return OpenAI(**client_config)
 
-    def _build_async_client(self) -> Any:
-        client_config = self._get_client_params()
+    def _build_async_client(self, *, access_token: str | None = None) -> Any:
+        client_config = self._get_client_params(access_token=access_token)
         if self.interceptor:
             transport = AsyncHTTPTransport(interceptor=self.interceptor)
             client_config["http_client"] = httpx.AsyncClient(transport=transport)
@@ -505,8 +518,9 @@ class OpenAICompletion(BaseLLM):
         if self.chatgpt_oauth:
             access_token = self._get_chatgpt_auth().get_access_token()
             if self._client is None:
-                self._client = self._build_sync_client()
-            self._client.api_key = access_token
+                self._client = self._build_sync_client(access_token=access_token)
+            else:
+                self._client.api_key = access_token
             return self._client
         if self._client is None:
             self._client = self._build_sync_client()
@@ -516,8 +530,9 @@ class OpenAICompletion(BaseLLM):
         if self.chatgpt_oauth:
             access_token = self._get_chatgpt_auth().get_access_token()
             if self._async_client is None:
-                self._async_client = self._build_async_client()
-            self._async_client.api_key = access_token
+                self._async_client = self._build_async_client(access_token=access_token)
+            else:
+                self._async_client.api_key = access_token
             return self._async_client
         if self._async_client is None:
             self._async_client = self._build_async_client()
@@ -604,11 +619,11 @@ class OpenAICompletion(BaseLLM):
             )
         return config
 
-    def _get_client_params(self) -> dict[str, Any]:
+    def _get_client_params(self, *, access_token: str | None = None) -> dict[str, Any]:
         """Get OpenAI client parameters."""
 
         if self.chatgpt_oauth:
-            api_key = self._get_chatgpt_auth().get_access_token()
+            api_key = access_token or self._get_chatgpt_auth().get_access_token()
         else:
             if self.api_key is None:
                 self.api_key = os.getenv("OPENAI_API_KEY")
