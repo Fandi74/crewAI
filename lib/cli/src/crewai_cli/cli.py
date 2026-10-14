@@ -768,6 +768,66 @@ def update() -> None:
     update_crew()
 
 
+
+@crewai.group()
+def auth() -> None:
+    """Manage local model-provider authentication."""
+
+
+@auth.group()
+def chatgpt() -> None:
+    """Manage Sign in with ChatGPT for local Responses API use."""
+
+
+@chatgpt.command(name="login")
+@click.option(
+    "--app-name",
+    prompt="Name of the local app using CrewAI",
+    help="App name shown during ChatGPT authorization.",
+)
+def chatgpt_login(app_name: str) -> None:
+    """Connect a ChatGPT account for eligible Responses API requests."""
+    from crewai_core.chatgpt_auth import ChatGPTOAuth
+
+    try:
+        status = ChatGPTOAuth().sign_in(app_name)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    account = status.get("email") or "ChatGPT account"
+    click.echo(f"Connected {account} for ChatGPT plan usage.")
+
+
+@chatgpt.command(name="status")
+def chatgpt_status() -> None:
+    """Show local ChatGPT plan-usage connection status."""
+    from crewai_core.chatgpt_auth import ChatGPTOAuth
+
+    try:
+        status = ChatGPTOAuth().status()
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    if not status or not status.get("connected"):
+        click.echo("No ChatGPT plan connection. Run crewai auth chatgpt login.")
+        return
+    click.echo(f"Connected: {status.get('email') or 'ChatGPT account'}")
+    click.echo(f"Plan usage enabled: {status.get('plan_usage_enabled', False)}")
+
+
+@chatgpt.command(name="logout")
+def chatgpt_logout() -> None:
+    """Remove locally saved ChatGPT credentials."""
+    from crewai_core.chatgpt_auth import ChatGPTOAuth
+
+    try:
+        removed = ChatGPTOAuth().sign_out()
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    if removed:
+        click.echo("Removed local ChatGPT credentials. The remote grant was not revoked.")
+    else:
+        click.echo("No local ChatGPT credentials were saved.")
+
+
 @crewai.command()
 def login() -> None:
     """Sign Up/Login to CrewAI AMP."""
