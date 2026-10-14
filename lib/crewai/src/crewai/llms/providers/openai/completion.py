@@ -400,11 +400,13 @@ class OpenAICompletion(BaseLLM):
     auto_chain_reasoning: bool = False
     api_base: str | None = None
     custom_openai: bool = False
+    chatgpt_oauth: bool = False
     is_o1_model: bool = False
     is_gpt4_model: bool = False
 
     _client: Any = PrivateAttr(default=None)
     _async_client: Any = PrivateAttr(default=None)
+    _chatgpt_auth: Any = PrivateAttr(default=None)
     _last_response_id: str | None = PrivateAttr(default=None)
     _last_reasoning_items: list[Any] | None = PrivateAttr(default=None)
 
@@ -413,23 +415,51 @@ class OpenAICompletion(BaseLLM):
     def _normalize_openai_fields(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
-        if data.get("custom_openai"):
-            custom_base_url = (
-                data.get("base_url")
-                or data.get("api_base")
-                or os.getenv("OPENAI_BASE_URL")
-                or os.getenv("OPENAI_API_BASE")
-            )
-            if not custom_base_url:
-                raise ValueError(
-                    "custom_openai=True requires base_url, api_base, "
-                    "OPENAI_BASE_URL, or OPENAI_API_BASE"
+        if data.get("chatgpt_oauth"):
+            api_base = "https://api.openai.com/v1"
+            if data.get("custom_openai"):
+                raise ValueError("chatgpt_oauth cannot be combined with custom_openai")
+            if data.get("api") not in (None, "responses"):
+                raise ValueError("chatgpt_oauth requires the Responses API")
+            if data.get("store") is True:
+                raise ValueError("chatgpt_oauth requires store=False")
+            if data.get("auto_chain") or data.get("previous_response_id"):
+                raise ValueError("chatgpt_oauth requires stateless requests without previous_response_id")
+            for key in ("base_url", "api_base"):
+                if data.get(key) not in (None, api_base):
+                    raise ValueError("chatgpt_oauth only supports https://api.openai.com/v1")
+            client_params = data.get("client_params") or {}
+            if client_params.get("base_url") not in (None, api_base):
+                raise ValueError("chatgpt_oauth only supports https://api.openai.com/v1")
+            headers = data.get("default_headers") or client_params.get("default_headers") or {}
+            if any(str(key).lower() == "authorization" for key in headers):
+                raise ValueError("Do not set Authorization headers with chatgpt_oauth")
+            data["api"] = "responses"
+            data["store"] = False
+            data["stream"] = True
+            data["max_retries"] = 0
+            data["api_key"] = None
+            data["base_url"] = api_base
+            data["api_base"] = None
+            data["custom_openai"] = False
+        else:
+            if data.get("custom_openai"):
+                custom_base_url = (
+                    data.get("base_url")
+                    or data.get("api_base")
+                    or os.getenv("OPENAI_BASE_URL")
+                    or os.getenv("OPENAI_API_BASE")
                 )
-            if not data.get("base_url") and not data.get("api_base"):
-                data["base_url"] = custom_base_url
+                if not custom_base_url:
+                    raise ValueError(
+                        "custom_openai=True requires base_url, api_base, "
+                        "OPENAI_BASE_URL, or OPENAI_API_BASE"
+                    )
+                if not data.get("base_url") and not data.get("api_base"):
+                    data["base_url"] = custom_base_url
+            data["api_key"] = data.get("api_key") or os.getenv("OPENAI_API_KEY")
         if not data.get("provider"):
             data["provider"] = "openai"
-        data["api_key"] = data.get("api_key") or os.getenv("OPENAI_API_KEY")
         if "api_base" not in data:
             data["api_base"] = None
         model = data.get("model", "gpt-4o")
@@ -464,15 +494,39 @@ class OpenAICompletion(BaseLLM):
             client_config["http_client"] = httpx.AsyncClient(transport=transport)
         return AsyncOpenAI(**client_config)
 
+    def _get_chatgpt_auth(self) -> Any:
+        if self._chatgpt_auth is None:
+            from crewai_core.chatgpt_auth import ChatGPTOAuth
+
+            self._chatgpt_auth = ChatGPTOAuth()
+        return self._chatgpt_auth
+
     def _get_sync_client(self) -> Any:
+        if self.chatgpt_oauth:
+            access_token = self._get_chatgpt_auth().get_access_token()
+            if self._client is None:
+                self._client = self._build_sync_client()
+            self._client.api_key = access_token
+            return self._client
         if self._client is None:
             self._client = self._build_sync_client()
         return self._client
 
     def _get_async_client(self) -> Any:
+        if self.chatgpt_oauth:
+            access_token = self._get_chatgpt_auth().get_access_token()
+            if self._async_client is None:
+                self._async_client = self._build_async_client()
+            self._async_client.api_key = access_token
+            return self._async_client
         if self._async_client is None:
             self._async_client = self._build_async_client()
         return self._async_client
+
+    def _effective_stream(self) -> bool | None:
+        if self.chatgpt_oauth:
+            return True
+        return super()._effective_stream()
 
     @property
     def last_response_id(self) -> str | None:
@@ -537,6 +591,8 @@ class OpenAICompletion(BaseLLM):
             config["seed"] = self.seed
         if self.reasoning_effort is not None:
             config["reasoning_effort"] = self.reasoning_effort
+        if self.chatgpt_oauth:
+            config["chatgpt_oauth"] = True
         if self.custom_openai:
             config["model"] = self.model
             config["custom_openai"] = True
@@ -551,13 +607,17 @@ class OpenAICompletion(BaseLLM):
     def _get_client_params(self) -> dict[str, Any]:
         """Get OpenAI client parameters."""
 
-        if self.api_key is None:
-            self.api_key = os.getenv("OPENAI_API_KEY")
+        if self.chatgpt_oauth:
+            api_key = self._get_chatgpt_auth().get_access_token()
+        else:
             if self.api_key is None:
-                raise ValueError("OPENAI_API_KEY is required")
+                self.api_key = os.getenv("OPENAI_API_KEY")
+                if self.api_key is None:
+                    raise ValueError("OPENAI_API_KEY is required")
+            api_key = self.api_key
 
         base_params = {
-            "api_key": self.api_key,
+            "api_key": api_key,
             "organization": self.organization,
             "project": self.project,
             "base_url": self.base_url
@@ -575,6 +635,10 @@ class OpenAICompletion(BaseLLM):
 
         if self.client_params:
             client_params.update(self.client_params)
+        if self.chatgpt_oauth:
+            client_params["api_key"] = api_key
+            client_params["base_url"] = "https://api.openai.com/v1"
+            client_params["max_retries"] = 0
 
         return client_params
 
@@ -1087,6 +1151,23 @@ class OpenAICompletion(BaseLLM):
             "timeout",
         }
 
+        if self.chatgpt_oauth:
+            # The ChatGPT plan route currently accepts a stateless streamed subset
+            # of Responses. Remove fields that the route does not support.
+            for key in (
+                "background", "conversation", "max_output_tokens", "max_tokens",
+                "max_tool_calls", "metadata", "moderation", "multi_agent", "prompt",
+                "prompt_cache_retention", "safety_identifier", "temperature",
+                "top_logprobs", "top_p", "truncation", "user", "previous_response_id",
+            ):
+                params.pop(key, None)
+            params["store"] = False
+            params["stream"] = True
+            allowed_tool_types = {"function", "custom", "web_search_preview"}
+            for tool in params.get("tools", []):
+                if tool.get("type") not in allowed_tool_types:
+                    raise ValueError("chatgpt_oauth supports function tools and web_search only")
+
         return {k: v for k, v in params.items() if k not in crewai_specific_params}
 
     def _convert_tools_for_responses(
@@ -1473,7 +1554,13 @@ class OpenAICompletion(BaseLLM):
                 if event.response and event.response.usage:
                     usage = self._extract_responses_token_usage(event.response)
                     self._track_token_usage_internal(usage)
+            elif event.type in {"response.failed", "response.incomplete"} and self.chatgpt_oauth:
+                response_error = getattr(event.response, "error", None)
+                error_code = getattr(response_error, "code", None) or event.type
+                raise RuntimeError(f"ChatGPT Responses request failed: {error_code}")
 
+        if self.chatgpt_oauth and final_response is None:
+            raise RuntimeError("ChatGPT Responses stream ended without response.completed.")
         finish_reason, response_id = (
             self._extract_responses_finish_reason_and_id(final_response)
             if final_response is not None
@@ -1610,7 +1697,13 @@ class OpenAICompletion(BaseLLM):
                 if event.response and event.response.usage:
                     usage = self._extract_responses_token_usage(event.response)
                     self._track_token_usage_internal(usage)
+            elif event.type in {"response.failed", "response.incomplete"} and self.chatgpt_oauth:
+                response_error = getattr(event.response, "error", None)
+                error_code = getattr(response_error, "code", None) or event.type
+                raise RuntimeError(f"ChatGPT Responses request failed: {error_code}")
 
+        if self.chatgpt_oauth and final_response is None:
+            raise RuntimeError("ChatGPT Responses stream ended without response.completed.")
         finish_reason, response_id = (
             self._extract_responses_finish_reason_and_id(final_response)
             if final_response is not None
