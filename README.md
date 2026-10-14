@@ -539,6 +539,8 @@ CrewAI supports using various LLMs through a variety of connection options. By d
 
 Please refer to the [Connect CrewAI to LLMs](https://docs.crewai.com/en/learn/llm-connections) page for details on configuring your agents' connections to models.
 
+For local, open-source applications, CrewAI can also connect through Sign in with ChatGPT and use eligible ChatGPT plan usage. See the [ChatGPT OAuth guide](docs/chatgpt-oauth.md).
+
 ## When to Use CrewAI
 
 Use CrewAI when you need more than a single prompt or chatbot: multi-step work, specialized agents, tool use, structured outputs, human review, or workflows that combine autonomous reasoning with explicit business logic.
