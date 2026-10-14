@@ -23,6 +23,7 @@ import portalocker
 
 AUTHORIZATION_ENDPOINT = "https://auth.openai.com/api/accounts/authorize"
 TOKEN_ENDPOINT = "https://auth.openai.com/api/accounts/oauth/token"
+REVOCATION_ENDPOINT = "https://auth.openai.com/api/accounts/oauth/revoke"
 JWKS_URL = "https://auth.openai.com/.well-known/jwks.json"
 ISSUER = "https://auth.openai.com"
 RESOURCE = "https://api.openai.com/v1"
@@ -275,14 +276,52 @@ class ChatGPTOAuth:
             "plan_usage_enabled": PLAN_SCOPE in profile.get("scopes", []),
         }
 
-    def sign_out(self) -> bool:
-        """Remove local credentials; this does not revoke the remote grant."""
+    def sign_out(self) -> tuple[bool, bool]:
+        """Revoke the renewable session, then clear local tokens.
+
+        Returns (credentials_found, remote_revocation_confirmed). Local tokens are
+        cleared even if OpenAI cannot confirm revocation.
+        """
         self.config_dir.mkdir(parents=True, exist_ok=True)
         with portalocker.Lock(str(self.lock_path), mode="a", timeout=30):
-            if not self.profile_path.exists():
-                return False
-            self.profile_path.unlink()
-            return True
+            profile = self._read_profile()
+            if profile is None:
+                return False, False
+
+            refresh_token = profile.get("refresh_token")
+            client_id = profile.get("client_id")
+            revoked = False
+            if isinstance(refresh_token, str) and refresh_token and isinstance(client_id, str) and client_id:
+                for attempt in range(3):
+                    try:
+                        response = httpx.post(
+                            REVOCATION_ENDPOINT,
+                            data={
+                                "token": refresh_token,
+                                "token_type_hint": "refresh_token",
+                                "client_id": client_id,
+                            },
+                            timeout=10.0,
+                        )
+                        if response.status_code >= 500:
+                            if attempt < 2:
+                                time.sleep(0.5 * (2**attempt))
+                                continue
+                            break
+                        response.raise_for_status()
+                        revoked = response.status_code == 200
+                        break
+                    except httpx.RequestError:
+                        if attempt < 2:
+                            time.sleep(0.5 * (2**attempt))
+                    except httpx.HTTPStatusError:
+                        break
+
+            for key in ("access_token", "refresh_token", "id_token"):
+                profile[key] = ""
+            profile["expires_at"] = 0
+            self._write_profile(profile)
+            return True, revoked
 
     @staticmethod
     def _validate_id_token(token: str, client_id: str, nonce: str) -> dict[str, Any]:
@@ -293,6 +332,7 @@ class ChatGPTOAuth:
                 signing_key.key,
                 algorithms=["RS256"],
                 audience=client_id,
+                leeway=5,
                 issuer=ISSUER,
                 options={"require": ["exp", "iss", "aud", "sub", "nonce"]},
             )
