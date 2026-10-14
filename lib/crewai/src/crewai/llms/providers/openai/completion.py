@@ -623,7 +623,7 @@ class OpenAICompletion(BaseLLM):
         """Get OpenAI client parameters."""
 
         if self.chatgpt_oauth:
-            api_key = access_token or self._get_chatgpt_auth().get_access_token()
+            api_key = access_token if access_token is not None else self._get_chatgpt_auth().get_access_token()
         else:
             if self.api_key is None:
                 self.api_key = os.getenv("OPENAI_API_KEY")
