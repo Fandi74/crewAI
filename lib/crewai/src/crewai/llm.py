@@ -470,11 +470,21 @@ class LLM(BaseLLM):
         DeepInfra id that is not ``org/model`` raises instead of falling through.
         ``kwargs`` is read, never mutated.
         """
+        chatgpt_oauth = bool(kwargs.get("chatgpt_oauth", False))
         custom_openai = bool(kwargs.get("custom_openai", False))
         custom_openai_route = custom_openai
         explicit_provider = kwargs.get("provider")
 
-        if custom_openai:
+        if chatgpt_oauth:
+            if custom_openai:
+                raise ValueError("chatgpt_oauth cannot be combined with custom_openai")
+            if explicit_provider and explicit_provider != "openai":
+                raise ValueError("chatgpt_oauth requires the OpenAI provider")
+            provider = "openai"
+            use_native = True
+            prefix, separator, model_part = model.partition("/")
+            model_string = model_part if separator and prefix.lower() == "openai" else model
+        elif custom_openai:
             if not cls._has_custom_openai_endpoint(kwargs):
                 raise ValueError(
                     "custom_openai=True requires base_url, api_base, "
